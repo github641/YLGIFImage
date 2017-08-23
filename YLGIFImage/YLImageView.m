@@ -32,14 +32,21 @@ const NSTimeInterval kMaxTimeStep = 1; // note: To avoid spiral-o-death
 {
     self = [super init];
     if (self) {
+        /* lzy注170823
+         // 初始化为0
+         */
         self.currentFrameIndex = 0;
     }
     return self;
 }
 
 - (CADisplayLink *)displayLink
-{
+{/* lzy注170823
+  // 本来调用时机就是特定的时间点，不仅调用时机会注意，懒加载中本身还要对时机进行过滤
+  */
+
     if (self.superview) {
+        // 有父视图的情况下
         if (!_displayLink && self.animatedImage) {
             _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(changeKeyframe:)];
             [_displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:self.runLoopMode];
@@ -57,7 +64,9 @@ const NSTimeInterval kMaxTimeStep = 1; // note: To avoid spiral-o-death
 }
 
 - (void)setRunLoopMode:(NSString *)runLoopMode
-{
+{/* lzy注170823
+  // setter方法中，根据传入的值，做一些操作，这也是重写setter方法的意义所在。
+  */
     if (runLoopMode != _runLoopMode) {
         [self stopAnimating];
         
@@ -71,6 +80,9 @@ const NSTimeInterval kMaxTimeStep = 1; // note: To avoid spiral-o-death
     }
 }
 
+/* lzy注170823
+ // override。这个方法是可以解释，在TuiaCopy工程里，把正常使用UIImageView+AFN，在返回数据序列化的时候，判断文件头为gif，使用YLGIFImage根据data创建image对象，到了UIImageView+AFN 148行回调中，直接                               strongSelf.image = responseObject;会自动播放gif。实际上是调用self.animatedImage = (YLGIFImage *)image;
+ */
 - (void)setImage:(UIImage *)image
 {
     if (image == self.image) {
@@ -84,21 +96,25 @@ const NSTimeInterval kMaxTimeStep = 1; // note: To avoid spiral-o-death
     self.accumulator = 0;
     
     if ([image isKindOfClass:[YLGIFImage class]] && image.images) {
-        if([image.images[0] isKindOfClass:UIImage.class])
+        // 传入是gif，是多个图片的集合
+        
+        if([image.images[0] isKindOfClass:UIImage.class])// 使用了isKindOfClass来区分UIImage和YLGIFImage对象
             [super setImage:image.images[0]];
         else
             [super setImage:nil];
         self.currentFrame = nil;
-        self.animatedImage = (YLGIFImage *)image;
+        self.animatedImage = (YLGIFImage *)image;// 这句代码是关键点
         self.loopCountdown = self.animatedImage.loopCount ?: NSUIntegerMax;
         [self startAnimating];
     } else {
+        // 传入的是一张普通图
         self.animatedImage = nil;
         [super setImage:image];
     }
+    // 刷新
     [self.layer setNeedsDisplay];
 }
-
+// override UIImageView
 - (void)setAnimatedImage:(YLGIFImage *)animatedImage
 {
     _animatedImage = animatedImage;
@@ -106,12 +122,13 @@ const NSTimeInterval kMaxTimeStep = 1; // note: To avoid spiral-o-death
         self.layer.contents = nil;
     }
 }
-
+// override UIImageView
 - (BOOL)isAnimating
 {
     return [super isAnimating] || (self.displayLink && !self.displayLink.isPaused);
 }
 
+// override UIImageView
 - (void)stopAnimating
 {
     if (!self.animatedImage) {
@@ -123,7 +140,7 @@ const NSTimeInterval kMaxTimeStep = 1; // note: To avoid spiral-o-death
     
     self.displayLink.paused = YES;
 }
-
+// override UIImageView
 - (void)startAnimating
 {
     if (!self.animatedImage) {
@@ -139,7 +156,9 @@ const NSTimeInterval kMaxTimeStep = 1; // note: To avoid spiral-o-death
     
     self.displayLink.paused = NO;
 }
-
+/* lzy注170823
+ 这是displayLink不断触发的调用方法
+ */
 - (void)changeKeyframe:(CADisplayLink *)displayLink
 {
     if (self.currentFrameIndex >= [self.animatedImage.images count]) {
@@ -157,11 +176,37 @@ const NSTimeInterval kMaxTimeStep = 1; // note: To avoid spiral-o-death
             self.currentFrameIndex = 0;
         }
         self.currentFrameIndex = MIN(self.currentFrameIndex, [self.animatedImage.images count] - 1);
+        // lzy170823注：这个方法的关键点。不断改变当前显示的图片，即self.currentFrame
+        
         self.currentFrame = [self.animatedImage getFrameWithIndex:self.currentFrameIndex];
+        /* lzy注170823,layer的重绘
+         Marks the receiver’s entire bounds rectangle as needing to be redrawn.
+         You can use this method or the setNeedsDisplayInRect: to notify the system that your view’s contents need to be redrawn. This method makes a note of the request and returns immediately. The view is not actually redrawn until the next drawing cycle, at which point all invalidated views are updated.
+         Note
+         If your view is backed by a CAEAGLLayer object, this method has no effect. It is intended for use only with views that use native drawing technologies (such as UIKit and Core Graphics) to render their content.
+         You should use this method to request that a view be redrawn only when the content or appearance of the view change. If you simply change the geometry of the view, the view is typically not redrawn. Instead, its existing content is adjusted based on the value in the view’s contentMode property. Redisplaying the existing content improves performance by avoiding the need to redraw content that has not changed.
+         Availability	iOS (2.0 and later), tvOS (9.0 and later)
+         */
         [self.layer setNeedsDisplay];
     }
 }
 
+/* lzy注170823。
+ 
+ 时间到了（CADisplayLink），触发上面那个方法，获取到当前的self.currentFrame（图片），调用了[self.layer setNeedsDisplay];
+ 立即会来到这个方法，然后设置layer.contents = (__bridge id)([self.currentFrame CGImage]);
+ 
+ CALayerDelegate中方法。
+ 
+ - (void)displayLayer:(CALayer *)layer;
+ Description  Tells the delegate to implement the display process.
+ The displayLayer: delegate method is invoked when the layer is marked for its content to be reloaded, typically initiated by the setNeedsDisplay method. 
+ 
+ The typical technique for updating is to set the layer's contents property.
+ Parameters layer  The layer whose contents need updating.
+ Availability	iOS (10.0 and later), macOS (10.12 and later), tvOS (10.0 and later)
+ 奇怪了，在模拟器8.1也可以使用，且会调用这个方法
+ */
 - (void)displayLayer:(CALayer *)layer
 {
     if (!self.animatedImage || [self.animatedImage.images count] == 0) {
@@ -172,6 +217,7 @@ const NSTimeInterval kMaxTimeStep = 1; // note: To avoid spiral-o-death
         layer.contents = (__bridge id)([self.currentFrame CGImage]);
 }
 
+// override UIView
 - (void)didMoveToWindow
 {
     [super didMoveToWindow];
@@ -185,7 +231,7 @@ const NSTimeInterval kMaxTimeStep = 1; // note: To avoid spiral-o-death
         });
     }
 }
-
+// override UIView
 - (void)didMoveToSuperview
 {
     [super didMoveToSuperview];
@@ -199,7 +245,7 @@ const NSTimeInterval kMaxTimeStep = 1; // note: To avoid spiral-o-death
         });
     }
 }
-
+// override UIImageView
 - (void)setHighlighted:(BOOL)highlighted
 {
     if (!self.animatedImage) {
@@ -207,11 +253,13 @@ const NSTimeInterval kMaxTimeStep = 1; // note: To avoid spiral-o-death
     }
 }
 
+// override UIImageView
 - (UIImage *)image
 {
     return self.animatedImage ?: [super image];
 }
 
+// override UIView
 - (CGSize)sizeThatFits:(CGSize)size
 {
     return self.image.size;
